@@ -1,22 +1,21 @@
 // src/context/AuthContext.tsx
 import { createContext, useState, useContext, useEffect } from 'react';
+// Add the 'type' keyword here
 import type { ReactNode } from 'react';
+import { useNavigate } from 'react-router-dom';
 
-// Define the shape of the context data
 interface AuthContextType {
   token: string | null;
   login: (newToken: string) => void;
   logout: () => void;
 }
 
-// Create the context with a default value of null
 const AuthContext = createContext<AuthContextType | null>(null);
 
-// Create the AuthProvider component
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
+  const navigate = useNavigate();
 
-  // On initial load, check if a token exists in local storage
   useEffect(() => {
     const storedToken = localStorage.getItem('id_token');
     if (storedToken) {
@@ -24,16 +23,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Function to handle logging in
   const login = (newToken: string) => {
     setToken(newToken);
     localStorage.setItem('id_token', newToken);
   };
 
-  // Function to handle logging out
   const logout = () => {
     setToken(null);
     localStorage.removeItem('id_token');
+    navigate('/');
   };
 
   return (
@@ -43,7 +41,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
-// Create a custom hook for easy context consumption
 export function useAuth() {
   const context = useContext(AuthContext);
   if (!context) {
