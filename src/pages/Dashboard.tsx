@@ -1,6 +1,5 @@
-// src/pages/Dashboard.tsx
 import { useState, useEffect } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, ChangeEvent } from 'react';
 import { useAuth } from '../context/AuthContext';
 
 interface Note {
@@ -8,6 +7,8 @@ interface Note {
   title: string;
   content: string;
   created_at: string;
+  attachment_s3_key?: string;
+  attachment_url?: string;
 }
 
 // --- SVG ICONS ---
@@ -34,8 +35,9 @@ export default function Dashboard() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [noteTitle, setNoteTitle] = useState('');
   const [noteContent, setNoteContent] = useState('');
-  const [isCreating, setIsCreating] = useState(false); // State for creating a new note
-  const [isUpdating, setIsUpdating] = useState<string | null>(null); // State to track which note is being updated
+  const [noteImage, setNoteImage] = useState<File | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const [isUpdating, setIsUpdating] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
@@ -61,31 +63,107 @@ export default function Dashboard() {
     fetchNotes();
   }, [token]);
 
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files[0]) {
+      setNoteImage(event.target.files[0]);
+    }
+  };
+
   const handleCreateNote = async (event: FormEvent) => {
     event.preventDefault();
+    if (!noteTitle.trim() || !noteContent.trim()) {
+      setError("Title and content are required.");
+      return;
+    }
     setIsCreating(true);
     setError('');
+
+    let attachmentS3Key: string | undefined = undefined;
+
     try {
-      const apiUrl = `${import.meta.env.VITE_API_GATEWAY_INVOKE_URL}/notes`;
-      const response = await fetch(apiUrl, {
+      if (noteImage) {
+        const urlApi = `${import.meta.env.VITE_API_GATEWAY_INVOKE_URL}/notes/generate-upload-url`;
+        const urlResponse = await fetch(urlApi, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+
+        if (!urlResponse.ok) {
+          throw new Error('Could not get an upload URL.');
+        }
+
+        const { uploadUrl, s3Key } = await urlResponse.json();
+        
+        const uploadResponse = await fetch(uploadUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'image/jpeg' },
+          body: noteImage,
+        });
+
+        if (!uploadResponse.ok) {
+          throw new Error('Failed to upload image to S3.');
+        }
+
+        attachmentS3Key = s3Key;
+      }
+
+      const createApi = `${import.meta.env.VITE_API_GATEWAY_INVOKE_URL}/notes`;
+      const noteData = {
+        title: noteTitle,
+        content: noteContent,
+        attachment_s3_key: attachmentS3Key,
+      };
+
+      const createResponse = await fetch(createApi, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ title: noteTitle, content: noteContent }),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(noteData),
       });
-      if (!response.ok) throw new Error('Failed to create note');
-      const newNote = await response.json();
+
+      if (!createResponse.ok) {
+        throw new Error('Failed to create the note.');
+      }
+
+      const newNote = await createResponse.json();
       setNotes([newNote, ...notes]);
+
       setNoteTitle('');
       setNoteContent('');
+      setNoteImage(null);
+      const fileInput = document.getElementById('noteImage') as HTMLInputElement;
+      if (fileInput) fileInput.value = '';
+
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred.');
+      setError(err instanceof Error ? err.message : 'An error occurred during note creation.');
     } finally {
       setIsCreating(false);
     }
   };
 
   const handleDeleteNote = async (noteId: string) => {
-    // ... (logic remains the same)
+    setError('');
+    try {
+      const apiUrl = `${import.meta.env.VITE_API_GATEWAY_INVOKE_URL}/notes/${noteId}`;
+      const response = await fetch(apiUrl, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete note.');
+      }
+
+      setNotes(notes.filter((n) => n.id !== noteId));
+      setPendingDeleteId(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred while deleting the note.');
+    }
   };
 
   const handleStartEdit = (note: Note) => {
@@ -98,7 +176,7 @@ export default function Dashboard() {
       setError("Title and content cannot be empty.");
       return;
     }
-    setIsUpdating(noteId); // Set which note is being updated
+    setIsUpdating(noteId);
     setError('');
     try {
       const apiUrl = `${import.meta.env.VITE_API_GATEWAY_INVOKE_URL}/notes/${noteId}`;
@@ -118,7 +196,7 @@ export default function Dashboard() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error has occurred.');
     } finally {
-      setIsUpdating(null); // Clear updating state
+      setIsUpdating(null);
     }
   };
 
@@ -165,10 +243,20 @@ export default function Dashboard() {
               required
               className="w-full p-4 border border-gray-300 rounded-md focus:ring-portola-gold focus:border-portola-gold font-garamond text-lg"
             />
+            <div>
+              <label htmlFor="noteImage" className="block text-lg font-medium text-gray-700 mb-2">Attach an Image</label>
+              <input
+                id="noteImage"
+                type="file"
+                accept="image/jpeg, image/png"
+                onChange={handleFileChange}
+                className="w-full text-lg text-portola-grey file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-portola-green file:text-portola-cream hover:file:opacity-90"
+              />
+            </div>
             <div className="text-right">
               <button
                 type="submit"
-                disabled={isCreating} // Now uses the dedicated 'isCreating' state
+                disabled={isCreating}
                 className="bg-portola-green text-portola-cream font-bold py-3 px-8 rounded-md hover:opacity-90 transition-opacity text-xl disabled:opacity-50"
               >
                 {isCreating ? 'Saving...' : 'Save Note'}
@@ -189,11 +277,11 @@ export default function Dashboard() {
         <div className="columns-1 md:columns-2 lg:columns-3 gap-8">
           {notes.length > 0 ? (
             notes.map((note) => (
-              <div key={note.id} className={`rounded-lg shadow-md p-6 flex flex-col break-inside-avoid mb-8 ${editingNoteId === note.id ? 'bg-white' : 'bg-portola-cream'}`}>
+              <div key={note.id} className={`rounded-lg shadow-md flex flex-col break-inside-avoid mb-8 ${editingNoteId === note.id ? 'bg-white' : 'bg-portola-cream'}`}>
                 
                 {editingNoteId === note.id ? (
                   // --- EDIT MODE ---
-                  <div className="flex flex-col h-full">
+                  <div className="flex flex-col h-full p-6">
                     <div className="flex justify-between items-start">
                       <input
                         type="text"
@@ -216,31 +304,45 @@ export default function Dashboard() {
                 ) : (
                   // --- DISPLAY MODE ---
                   <>
-                    <div className="flex justify-between items-start">
-                      <h3 className="text-2xl font-bold text-portola-bronze">{note.title || 'Untitled'}</h3>
-                      <button onClick={() => handleStartEdit(note)} className="text-portola-green hover:text-portola-bronze">
-                        <EditIcon />
-                      </button>
-                    </div>
-                    <hr className="border-t border-portola-bronze my-4" />
-                    <p className="text-portola-grey text-lg mb-4 flex-grow">{note.content}</p>
-                    <div className="border-t border-portola-bronze pt-4 flex justify-between items-center">
-                      <small className="text-portola-bronze">
-                        {new Date(note.created_at).toLocaleDateString('en-US', {
-                          year: 'numeric',
-                          month: 'long',
-                          day: 'numeric',
-                        })}
-                      </small>
-                      {pendingDeleteId === note.id ? (
-                        <button onClick={() => handleDeleteNote(note.id)} className="bg-red-800 text-white font-bold py-1 px-3 rounded text-sm">
-                          Are you sure?
-                        </button>
-                      ) : (
-                        <button onClick={() => setPendingDeleteId(note.id)} className="text-portola-bronze hover:opacity-75 transition-opacity">
-                          <TrashIcon />
-                        </button>
-                      )}
+                    {note.attachment_url && (
+                      <img 
+                        src={note.attachment_url} 
+                        alt={`Attachment for ${note.title}`} 
+                        className="w-full h-auto rounded-t-lg object-cover"
+                      />
+                    )}
+                    <div className="p-6 flex flex-col flex-grow">
+                        <div className="flex justify-between items-start">
+                          <h3 className="text-2xl font-bold text-portola-bronze flex-grow">{note.title || 'Untitled'}</h3>
+                          <button onClick={() => handleStartEdit(note)} className="text-portola-green hover:text-portola-bronze flex-shrink-0 ml-4">
+                            <EditIcon />
+                          </button>
+                        </div>
+                        <hr className="border-t border-portola-bronze my-4" />
+                        <p className="text-portola-grey text-lg mb-4 flex-grow">{note.content}</p>
+                        <div className="border-t border-portola-bronze pt-4 flex justify-between items-center mt-auto">
+                          <small className="text-portola-bronze">
+                            {new Date(note.created_at).toLocaleDateString('en-US', {
+                              year: 'numeric',
+                              month: 'long',
+                              day: 'numeric',
+                            })}
+                          </small>
+                          {pendingDeleteId === note.id ? (
+                            <div>
+                                <button onClick={() => handleDeleteNote(note.id)} className="bg-red-800 text-white font-bold py-1 px-3 rounded text-sm mr-2">
+                                  Confirm
+                                </button>
+                                <button onClick={() => setPendingDeleteId(null)} className="bg-gray-500 text-white font-bold py-1 px-3 rounded text-sm">
+                                  Cancel
+                                </button>
+                            </div>
+                          ) : (
+                            <button onClick={() => setPendingDeleteId(note.id)} className="text-portola-bronze hover:opacity-75 transition-opacity">
+                              <TrashIcon />
+                            </button>
+                          )}
+                        </div>
                     </div>
                   </>
                 )}
